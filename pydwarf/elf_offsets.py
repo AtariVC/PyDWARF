@@ -13,8 +13,10 @@ def _validate_struct(struct):
     kind, name = 'typedef', struct
     if ' ' in struct:
         kind, name = struct.split(' ', 1)
-        if kind not in {'struct', 'union'}:
+        if kind not in {'struct', 'union', 'typedef'}:
             raise ValueError('Not a struct or union')
+        if len(name.split()) > 1:
+            name = name.split()[-1]
     return kind, name
 
 
@@ -39,8 +41,11 @@ def get_all_offsets_from_ELF(filename: Path | str, structs) -> dict[str, list[tu
         for struct, (kind, value) in zip(structs, names):
             cu, item = items[kind, value]
             offset2die = cu2offset2die[cu]
-            if kind == 'typedef':
-                item = offset2die[item.attributes['DW_AT_type'].value]
+            if kind == 'DW_TAG_typedef':
+                for offset, die in offset2die.items():
+                    if die.tag == 'DW_TAG_structure_type':
+                        item = offset2die[offset]
+                        break
             result[struct] = [
                 (field_type, field_name, offset)
                 for field_type, field_name, offset in get_offsets_from_DIE(item, offset2die)
@@ -79,11 +84,15 @@ def get_items_from_DWARF(dwarf, tags=None, names=None):
 
 
 def get_offsets_from_DIE(die, offset2die, start=0):
-    assert die.tag in {'DW_TAG_structure_type', 'DW_TAG_union_type'}, 'Unhandled main type: ' + die.tag
+    assert die.tag in {'DW_TAG_structure_type', 'DW_TAG_union_type', 'DW_TAG_typedef'}, 'Unhandled main type: ' + die.tag
     # Union members all start at the same offset (at least I sure fucking hope so)
     offset = start
+    array_size = 0
     for child in die.iter_children():
-        if child.tag != 'DW_TAG_member':
+        if child.tag == 'DW_TAG_array_type':
+            array_size = list(child.iter_children())[0].attributes['DW_AT_upper_bound'].value + 1
+            continue
+        elif child.tag != 'DW_TAG_member':
             continue
         assert child.tag in 'DW_TAG_member', 'Unhandled child type: ' + child.tag
         if die.tag == 'DW_TAG_structure_type':
@@ -104,6 +113,9 @@ def get_offsets_from_DIE(die, offset2die, start=0):
 
         if 'DW_AT_name' in child.attributes:
             value_name = child.attributes['DW_AT_name'].value.decode('ascii')
+            if array_size > 0:
+                value_name += f'[{array_size}]'
+                array_size = 0
             value_die = child.get_DIE_from_attribute('DW_AT_type')
             if 'DW_AT_name' in value_die.attributes:
                 value_type = value_die.attributes['DW_AT_name'].value.decode('ascii')
