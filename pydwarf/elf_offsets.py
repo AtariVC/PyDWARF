@@ -32,6 +32,8 @@ def get_all_offsets_from_ELF(filename: Path | str, structs) -> dict[str, list[tu
 
         dwarf = elffile.get_dwarf_info()
         items = get_items_from_DWARF(dwarf, names=set(names))
+        if not items:
+            return {}
         cus = {cu for cu, item in items.values()}
         cu2offset2die = {
             cu: {die.offset: die for die in cu.iter_DIEs()}
@@ -42,10 +44,7 @@ def get_all_offsets_from_ELF(filename: Path | str, structs) -> dict[str, list[tu
             cu, item = items[kind, value]
             offset2die = cu2offset2die[cu]
             if kind == 'DW_TAG_typedef':
-                for offset, die in offset2die.items():
-                    if die.tag == 'DW_TAG_structure_type':
-                        item = offset2die[offset]
-                        break
+                item = item.get_DIE_from_attribute('DW_AT_type')
             result[struct] = [
                 (field_type, field_name, offset)
                 for field_type, field_name, offset in get_offsets_from_DIE(item, offset2die)
@@ -87,10 +86,10 @@ def get_offsets_from_DIE(die, offset2die, start=0):
     assert die.tag in {'DW_TAG_structure_type', 'DW_TAG_union_type', 'DW_TAG_typedef'}, 'Unhandled main type: ' + die.tag
     # Union members all start at the same offset (at least I sure fucking hope so)
     offset = start
-    array_size = 0
+    array_size = []
     for child in die.iter_children():
         if child.tag == 'DW_TAG_array_type':
-            array_size = list(child.iter_children())[0].attributes['DW_AT_upper_bound'].value + 1
+            array_size.append(list(child.iter_children())[0].attributes['DW_AT_upper_bound'].value + 1)
             continue
         elif child.tag != 'DW_TAG_member':
             continue
@@ -113,19 +112,28 @@ def get_offsets_from_DIE(die, offset2die, start=0):
 
         if 'DW_AT_name' in child.attributes:
             value_name = child.attributes['DW_AT_name'].value.decode('ascii')
-            if array_size > 0:
-                value_name += f'[{array_size}]'
-                array_size = 0
+            if len(array_size) > 0:
+                for size in array_size[::-1]:
+                    value_name += f'[{size}]'
+                array_size = []
             value_die = child.get_DIE_from_attribute('DW_AT_type')
             if 'DW_AT_name' in value_die.attributes:
                 value_type = value_die.attributes['DW_AT_name'].value.decode('ascii')
             else:
-                p = value_die.get_DIE_from_attribute('DW_AT_type')
-                if 'DW_AT_name' in p.attributes:
-                    v  = p.attributes['DW_AT_name']
-                    value_type = v.value.decode('ascii')
+                if 'DW_AT_type' in value_die.attributes:
+                    p = value_die.get_DIE_from_attribute('DW_AT_type')
+                    if 'DW_AT_name' in p.attributes:
+                        v  = p.attributes['DW_AT_name']
+                        value_type = v.value.decode('ascii')
+                    else:
+                        p2 = p.get_DIE_from_attribute('DW_AT_type')
+                        if 'DW_AT_name' in p2.attributes:
+                            v  = p2.attributes['DW_AT_name']
+                            value_type = v.value.decode('ascii')
+                        else:
+                            value_type = ''
                 else:
-                    value_type = ''
+                    value_type = 'struct'
             yield value_type, value_name, offset
         else:
             # Anonymous union or struct
@@ -141,7 +149,7 @@ if __name__ == '__main__':
     search_offest_for: list[str] = [
         # "struct LoRa_setting",
         # "union RadioProtocol"
-        "struct OM_t"
+        "typedef struct TMI9_t"
     ]
     result: dict = get_all_offsets_from_ELF(filename, search_offest_for)
     for struct_name, data in result.items():
