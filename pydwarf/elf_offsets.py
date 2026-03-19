@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import json
 from pathlib import Path
 from typing import Any, Literal
 from elftools.elf.elffile import ELFFile
@@ -130,6 +131,8 @@ def get_offsets_from_DIE(die, offset2die, level=0):
         if die.tag == 'DW_TAG_structure_type':
             # Struct members have different starting offsets
             field.offset = calc_offset(child)
+        elif die.tag == 'DW_TAG_enumeration_type':
+            field.type_val = 'enum'
 
         flag = False
         if 'DW_AT_name' in child.attributes:
@@ -149,6 +152,8 @@ def get_offsets_from_DIE(die, offset2die, level=0):
                         types.append(child.attributes['DW_AT_name'].value.decode('ascii'))
                         field.type_val = types[0]
                     if child.tag == 'DW_TAG_structure_type':
+                        if field.type_val == '':
+                            field.type_val = 'struct'
                         flag = True
                         yield field
                         yield from get_offsets_from_DIE(child, offset, level=level+1)
@@ -165,17 +170,17 @@ def get_offsets_from_DIE(die, offset2die, level=0):
             yield from get_offsets_from_DIE(p, offset2die, level=level+1)
 
 
-def print_result(result: dict[str, list[Field]],
-                 labels_indent: int,
-                 offset_indet: int,
-                 output_format: Literal['table', 'struct'],
-                 csv_output_filename: str | None = None,
-                 max_depth: int = 99,
-                 table_format: Literal['plain', 'simple', 'grid', 'pipe',
-                                       'orgtbl', 'rst', 'mediawiki', 'github',
-                                       'latex', 'latex_raw', 'latex_booktabs',
-                                       'latex_longtable', 'tsv'] = 'grid',
-                 ):
+def to_string(result: dict[str, list[Field]],
+              labels_indent: int,
+              offset_indet: int,
+              output_format: Literal['table', 'struct', 'json'],
+              csv_output_filename: str | None = None,
+              max_depth: int = 99,
+              table_format: Literal['plain', 'simple', 'grid', 'pipe',
+                                    'orgtbl', 'rst', 'mediawiki', 'github',
+                                    'latex', 'latex_raw', 'latex_booktabs',
+                                    'latex_longtable', 'tsv'] = 'grid',
+              ):
     max_depth = 1 if max_depth < 1 else max_depth
     def to_columns(field: Field, output_format: Literal['struct', 'table']):
         prefix1 = "⠀" * labels_indent if output_format == 'struct' else ""
@@ -187,25 +192,33 @@ def print_result(result: dict[str, list[Field]],
         second_column: str = f'{prefix2}{" " * offset_indet * field.level}+{field.offset}'
         return first_column, second_column
 
+    output: list[str] = []
+    table: list[tuple[str, str]] = []
     for struct_name, data in result.items():
         if output_format == 'table':
-            table: list[tuple[str, str]] = [to_columns(field, output_format) for field in data
+            table = [to_columns(field, output_format) for field in data
                                             if field.level < max_depth]
-            print(tabulate(table, headers=[struct_name, 'offsets'],
+            output.append(tabulate(table, headers=[struct_name, 'offsets'],
                            tablefmt=table_format, disable_numparse=True,
-                           preserve_whitespace=True))  # type: ignore
+                           stralign='left', preserve_whitespace=True))  # type: ignore
         elif output_format == 'struct':
             table = [to_columns(field, output_format) for field in data
                      if field.level < max_depth]
-            print(tabulate(table, headers=[f'{struct_name} {{', ''],
+            output.append(tabulate(table, headers=[f'{struct_name} {{', ''],
                            tablefmt='plain', disable_numparse=True,
-                           preserve_whitespace=True))  # type: ignore
-            print('}')
+                           stralign='left', preserve_whitespace=True) + '}')  # type: ignore
+        elif output_format == 'json':
+            data = {key: [asdict(v) for v in val] for key, val in result.items()}
+            output.append(json.dumps(data, indent=labels_indent))
+        else:
+            print('incorrect output_format')
+            return ''
         if csv_output_filename is not None:
             csv_data: str = f'{struct_name};offsets\n'
             csv_data += '\n'.join([';'.join(line) for line in table])
             with open(Path.cwd() / csv_output_filename, 'w+', encoding='utf-8') as file:
                 file.write(csv_data)
+    return '\n\n'.join(output)
 
 
 if __name__ == '__main__':
@@ -214,14 +227,15 @@ if __name__ == '__main__':
     search_offest_for: list[str] = [
         # "struct LoRa_setting",
         # "union RadioProtocol"
-        "typedef struct TMI_t"
+        "typedef struct TMI6_t",
+        "typedef struct TMI7_t",
     ]
     result: dict[str, list[Field]] = get_all_offsets_from_ELF(filename,
                                                               search_offest_for)
-    print_result(result,
-                 labels_indent=4,
-                 offset_indet=0,
-                 output_format='struct',
-                 table_format='grid',
-                 csv_output_filename='test.csv',
-                 max_depth=5)
+    print(to_string(result,
+                    labels_indent=4,
+                    offset_indet=0,
+                    output_format='table',
+                    table_format='pipe',
+                    csv_output_filename='test.csv',
+                    max_depth=5))
