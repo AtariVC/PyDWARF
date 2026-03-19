@@ -209,8 +209,9 @@ def to_string(result: dict[str, list[Field]],
                            tablefmt='plain', disable_numparse=True,
                            stralign='left', preserve_whitespace=True) + '}')  # type: ignore
         elif output_format == 'json':
-            data = {key: [asdict(v) for v in val] for key, val in result.items()}
-            output.append(json.dumps(data, indent=labels_indent))
+            obj: dict = {key: [asdict(v) for v in val]
+                         for key, val in result.items()}
+            output.append(json.dumps(obj, indent=labels_indent))
         else:
             print('incorrect output_format')
             return ''
