@@ -19,7 +19,7 @@ class Field:
     label: str
     offset: int
     bits: str | None = None
-    array: str | None = None
+    array: str = ''
 
 
 
@@ -131,43 +131,39 @@ def get_offsets_from_DIE(die, offset2die, level=0):
             # Struct members have different starting offsets
             field.offset = calc_offset(child)
 
+        flag = False
         if 'DW_AT_name' in child.attributes:
             field.label = child.attributes['DW_AT_name'].value.decode('ascii')
             if len(array_size) > 0:
                 for size in array_size[::-1]:
-                    field.array = f'[{size}]'
+                    field.array += f'[{size}]'
                 array_size = []
             if 'DW_AT_bit_offset' in child.attributes:
                 field.bits = f': {child.attributes["DW_AT_bit_size"].value}'
-            value_die = child.get_DIE_from_attribute('DW_AT_type')
-            if 'DW_AT_name' in value_die.attributes:
-                field.type_val = value_die.attributes['DW_AT_name'].value.decode('ascii')
-            else:
-                if 'DW_AT_type' in value_die.attributes:
-                    p = value_die.get_DIE_from_attribute('DW_AT_type')
-                    if 'DW_AT_name' in p.attributes:
-                        v  = p.attributes['DW_AT_name']
-                        field.type_val = v.value.decode('ascii')
-                    else:
-                        p2 = p.get_DIE_from_attribute('DW_AT_type')
-                        if 'DW_AT_name' in p2.attributes:
-                            v  = p2.attributes['DW_AT_name']
-                            field.type_val = v.value.decode('ascii')
-                        else:
-                            field.type_val = ''
-                else:
-                    field.type_val = 'struct'
-            yield field
-            if field.type_val == 'struct' and value_die.has_children:
-                yield from get_offsets_from_DIE(value_die, offset, level=level+1)
-            elif value_die.tag == 'DW_TAG_typedef':
-                p = value_die.get_DIE_from_attribute('DW_AT_type')
-                if p.has_children:
-                    yield from get_offsets_from_DIE(p, offset, level=level+1)
+
+            types = []
+            if 'DW_AT_name' in child.attributes:
+                while 'DW_AT_type' in child.attributes:
+                    child = child.get_DIE_from_attribute('DW_AT_type')
+                    if 'DW_AT_name' in child.attributes:
+                        types.append(child.attributes['DW_AT_name'].value.decode('ascii'))
+                        field.type_val = types[0]
+                    if child.tag == 'DW_TAG_structure_type':
+                        flag = True
+                        yield field
+                        yield from get_offsets_from_DIE(child, offset, level=level+1)
+            else:  # arrays
+                while 'DW_AT_name' not in child.attributes and 'DW_AT_type' in child.attributes:
+                    child = child.get_DIE_from_attribute('DW_AT_type')
+                if 'DW_AT_name' in child.attributes:
+                    field.type_val = child.attributes['DW_AT_name'].value.decode('ascii')
+            if not flag:
+                yield field
         else:
             # Anonymous union or struct
             p = child.get_DIE_from_attribute('DW_AT_type')
             yield from get_offsets_from_DIE(p, offset2die, level=level+1)
+
 
 def print_result(result: dict[str, list[Field]],
                  labels_indent: int,
@@ -178,19 +174,20 @@ def print_result(result: dict[str, list[Field]],
                  table_format: Literal['plain', 'simple', 'grid', 'pipe',
                                        'orgtbl', 'rst', 'mediawiki', 'github',
                                        'latex', 'latex_raw', 'latex_booktabs',
-                                       'latex_longtable', 'tsv'] = 'rst',
+                                       'latex_longtable', 'tsv'] = 'grid',
                  ):
     max_depth = 1 if max_depth < 1 else max_depth
     def to_columns(field: Field, output_format: Literal['struct', 'table']):
         prefix1 = "⠀" * labels_indent if output_format == 'struct' else ""
         prefix2 = "// " if output_format == 'struct' else ""
+        bits: str = f'{field.bits}' if field.bits else ''
+        array = f'{field.array}' if field.array else ''
         first_column: str = f'{prefix1}{" " * labels_indent * field.level} '\
-                            f'{field.type_val}{field.label}'
+                            f'{field.type_val} {field.label}{bits}{array}'
         second_column: str = f'{prefix2}{" " * offset_indet * field.level}+{field.offset}'
         return first_column, second_column
 
     for struct_name, data in result.items():
-        # tbl.PRESERVE_WHITESPACE = True
         if output_format == 'table':
             table: list[tuple[str, str]] = [to_columns(field, output_format) for field in data
                                             if field.level < max_depth]
@@ -210,20 +207,21 @@ def print_result(result: dict[str, list[Field]],
             with open(Path.cwd() / csv_output_filename, 'w+', encoding='utf-8') as file:
                 file.write(csv_data)
 
+
 if __name__ == '__main__':
     filename: Path = Path.cwd() / 'GrADCS_MCU_FW.axf'
     # filename: Path = Path(__file__).parent / 'STM32_LoRa_v3.1.out.elf'
     search_offest_for: list[str] = [
         # "struct LoRa_setting",
         # "union RadioProtocol"
-        "typedef struct TMI6_t"
+        "typedef struct TMI_t"
     ]
     result: dict[str, list[Field]] = get_all_offsets_from_ELF(filename,
                                                               search_offest_for)
     print_result(result,
                  labels_indent=4,
                  offset_indet=0,
-                 output_format='table',
+                 output_format='struct',
                  table_format='grid',
                  csv_output_filename='test.csv',
-                 max_depth=3)
+                 max_depth=5)
